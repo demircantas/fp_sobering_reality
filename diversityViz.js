@@ -1,13 +1,42 @@
 // diversityViz.js
 
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.158.0/build/three.module.js';
-// import { VRButton } from 'three/examples/jsm/webxr/VRButton.js';
 import { VRButton } from './VRButton.js';
+import { XRControllerModelFactory } from './XRControllerModelFactory.js';
 
 export class DiversityVisualizer {
   constructor(container) {
     this.container = container;
     this.people = [];
+    this.controllers = [];
+    this.dragging = null;
+
+    for (let i = 0; i < 2; i++) {
+      const controller = this.renderer.xr.getController(i);
+      controller.addEventListener('selectstart', this._onSelectStart.bind(this));
+      controller.addEventListener('selectend', this._onSelectEnd.bind(this));
+      this.scene.add(controller);
+      this.controllers.push(controller);
+
+      const controllerGrip = this.renderer.xr.getControllerGrip(i);
+      const controllerModelFactory = new XRControllerModelFactory();
+      controllerGrip.add(controllerModelFactory.createControllerModel(controllerGrip));
+      this.scene.add(controllerGrip);
+    }
+
+    // VR SLIDER SETUP
+    const trackGeometry = new THREE.BoxGeometry(1, 0.02, 0.02);
+    const trackMaterial = new THREE.MeshBasicMaterial({ color: 0x888888 });
+    this.sliderTrack = new THREE.Mesh(trackGeometry, trackMaterial);
+    this.scene.add(this.sliderTrack);
+    this.sliderTrack.position.set(0, 1.5, -2);
+
+    const thumbGeometry = new THREE.BoxGeometry(0.05, 0.05, 0.05);
+    const thumbMaterial = new THREE.MeshBasicMaterial({ color: 0xff0000 });
+    this.sliderThumb = new THREE.Mesh(thumbGeometry, thumbMaterial);
+    this.scene.add(this.sliderThumb);
+    this.sliderThumb.position.set(0, 1.5, -2);
+
     this.highlighted = null;
     this.mouse = new THREE.Vector2();
     this.lastProgress = 0;
@@ -112,6 +141,26 @@ export class DiversityVisualizer {
     }
 
     this.people.forEach(p => p.applyClusteringForce(this.lastProgress));
+    if (this.dragging) {
+      const controller = this.controllers.find(c => c.userData.dragging);
+      if (controller) {
+        const position = new THREE.Vector3();
+        position.setFromMatrixPosition(controller.matrixWorld);
+
+        // Constrain thumb's x movement between -0.5 and +0.5
+        const minX = -0.5;
+        const maxX = 0.5;
+        this.dragging.position.x = THREE.MathUtils.clamp(position.x, minX, maxX);
+
+        // Keep y/z fixed
+        this.dragging.position.y = this.sliderTrack.position.y;
+        this.dragging.position.z = this.sliderTrack.position.z;
+
+        // Map thumb x-position to slider progress (0 to 1)
+        const normalizedValue = (this.dragging.position.x - minX) / (maxX - minX);
+        this.update(normalizedValue);
+      }
+    }
     this.renderer.render(this.scene, this.camera);
   }
 
@@ -121,6 +170,35 @@ export class DiversityVisualizer {
       this.mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
       this.mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
     });
+  }
+
+  _onSelectStart(event) {
+      const controller = event.target;
+      const intersections = this._getIntersections(controller);
+
+      if (intersections.length > 0) {
+        this.dragging = intersections[0].object;
+        controller.userData.dragging = this.dragging;
+      }
+    }
+
+  _onSelectEnd(event) {
+    const controller = event.target;
+    if (controller.userData.dragging) {
+      controller.userData.dragging = undefined;
+      this.dragging = undefined;
+    }
+  }
+
+  _getIntersections(controller) {
+    const tempMatrix = new THREE.Matrix4();
+    tempMatrix.identity().extractRotation(controller.matrixWorld);
+
+    const raycaster = new THREE.Raycaster();
+    raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
+    raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tempMatrix);
+
+    return raycaster.intersectObject(this.sliderThumb);
   }
 
   update(progress) {
